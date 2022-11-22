@@ -1,31 +1,20 @@
-#%% 
+#%% Imports necessários 
 
 import os
 os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
 
 import numpy as np
 import cv2
-import uuid
-import time
 import pandas as pd
-pd.options.mode.chained_assignment = None  # default='warn'
+pd.options.mode.chained_assignment = None 
 
-import xmltodict
 import glob
 import xml.etree.ElementTree as ET
-import random as rnd
 import splitfolders
 import easyocr
-import PIL
-import copy
+import yaml
 
 from pathlib import Path
-from sklearn.model_selection import train_test_split
-from collections import Counter
-from PIL import Image
-from tqdm.auto import tqdm
-from GPUtil import showUtilization as gpu_usage
-from numba import cuda
 from timeit import default_timer as timer
 
 import torch
@@ -34,10 +23,8 @@ import matplotlib
 matplotlib.use('TkAgg')
 
 from matplotlib import pyplot as plt
-from matplotlib import image as mpimg
-from matplotlib import patches as mpatches
 
-#%%
+#%% Dicionário com as informações básicas do dataset
 
 dataset = {
             "file":[],
@@ -49,7 +36,7 @@ dataset = {
             "ymax":[]
            }
 
-# %%
+#%% Exploramos as imagens no dataset e separamos as imagens .png .jpg e seus respectivos documentos .xml em duas listas
 
 img_names=[] 
 annotations=[]
@@ -66,7 +53,7 @@ img_names[:10]
 
 annotations[:10]
 
-# %%
+#%% Reescrevemos os .xml para nosso dicionário
 
 path_annotations="./car-plates/annotations/*.xml" 
 
@@ -108,41 +95,7 @@ df
 
 df.info()
 
-# %%
-
-%pylab inline
-
-def print_random_images(photos: list, n: int = 5, seed=None) -> None:
-    if n > 10:
-        n=10
-    
-    if seed:
-        rnd.seed(seed)
-        
-    random_photos = rnd.sample(photos, n)
-    
-    for image_path in random_photos:
-        
-        with Image.open(image_path) as fd:
-            fig, ax = plt.subplots()
-            ax.imshow(fd)           
-            ax.axis(False)
-            
-            for i, file in enumerate(df.file):
-                if file in image_path:
-                    x1,y1,x2,y2=list(df.iloc[i, -4:])
-                        
-                    mpatch=mpatches.Rectangle((x1,y1),x2-x1,y2-y1,linewidth=1, edgecolor='b',facecolor="none",lw=2,)                    
-                    ax.add_patch(mpatch)
-                    rx, ry = mpatch.get_xy()
-                    ax.annotate('licence', (rx, ry-2), color='blue', weight='bold', fontsize=12, ha='left', va='baseline')
-                    
-photos_path = "car-plates/images/*.png"
-photos_list = glob.glob(photos_path)
-
-print_random_images(photos_list)
-
-# %%
+#%% Normalizando os dados para uso do YOLOv5 em arquivos .txt
 
 x_pos = []
 y_pos = []
@@ -187,35 +140,33 @@ df['frame_height']=frame_height
 
 df
 
-# %%
+#%% Usando a biblioteca Splitfolders separamos as imagens e labels em sets de treinamento e de validação 
 
-input_folder = Path("./car-plates")
-output_folder = Path("yolov5/data/plate-recognition")
+pasta_de_entrada = Path("./car-plates")
+pasta_de_saida = Path("yolov5/data/plate-recognition")
 
 splitfolders.ratio(
-    input_folder,
-    output=output_folder,
+    pasta_de_entrada,
+    output=pasta_de_saida,
     seed=42,
     ratio=(0.8, 0.2),
     group_prefix=None
 )
-print("Moving files finished.")
+print("Separação dos arquivos finalizada")
 
 # %%
 
-def walk_through_dir(dir_path: Path) -> None:
-    """Prints dir_path content"""
+def caminhando_pela_pasta(dir_path: Path) -> None:
+    """Imprime o conteudo das pastas"""
     for dirpath, dirnames, filenames in os.walk(dir_path):
-        print(f"There are {len(dirnames)} directiories and {len(filenames)} files in '{dirpath}' folder ")
+        print(f"Tem {len(dirnames)} pastas e {len(filenames)} arquivos na pasta '{dirpath}'")
 
     
-walk_through_dir(input_folder)
+caminhando_pela_pasta(pasta_de_entrada)
 print()
-walk_through_dir(output_folder)
+caminhando_pela_pasta(pasta_de_saida)
 
-#%%
-
-import yaml
+#%% Configuração do arquivo .yaml
 
 yaml_file = 'yolov5/data/plates.yaml'
 
@@ -230,42 +181,42 @@ yaml_data = dict(
 with open(yaml_file, 'w') as f:
     yaml.dump(yaml_data, f, explicit_start = True, default_flow_style = False)
 
-#%% 
+#%% Caso não haja GPU, irá utilizar CPU como dispositivo
 
 device = '0' if torch.cuda.is_available() else 'cpu' 
 device
 
-# %%
+# %% Treino do modelo YOLOv5
 
 start_time = timer()
 
-!cd yolov5 && python train.py --workers 2 --img 640 --batch 16 --epochs 3 --data "data/plates.yaml" --weights yolov5s.pt --device {device} --cache
+# !cd yolov5 && python train.py --workers 2 --img 640 --batch 16 --epochs 3 --data "data/plates.yaml" --weights yolov5s.pt --device {device} --cache
 
 end_time = timer()
 
 print(f'Training time: {(end_time-start_time):.2f}')
 
-# %%
+#%% Definindo o modelo a ser usado
 
-model = torch.hub.load('ultralytics/yolov5', 'custom', path = 'yolov5/runs/train/exp2/weights/best.pt', force_reload=True)
+model = torch.hub.load('ultralytics/yolov5', 'custom', path = 'yolov5/runs/train/exp5/weights/best.pt', force_reload=True)
 
 reader = easyocr.Reader(['en'])
 
-#%%
+#%% Funções para detecção/leitura de placas em vídeo
 
 def get_plates_xy(frame: np.ndarray, labels: list, row: list, width: int, height: int, reader: easyocr.Reader) -> tuple:
-    '''Get the results from easyOCR for each frame and return them with bounding box coordinates'''
+    '''Obtem os resultados do EasyOCR e retorna-os com as coordenadas da caixa delimitadora'''
     
     x1, y1, x2, y2 = int(row[0]*width), int(row[1]*height), int(row[2]*width), int(row[3]*height) ## BBOx coordniates
     plate_crop = frame[int(y1):int(y2), int(x1):int(x2)]
-    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2) ## BBox
+    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
     ocr_result = reader.readtext(np.asarray(plate_crop), allowlist = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ')#, paragraph="True", min_size=50)
     
     return ocr_result, x1, y1
 
 
 def detect_text(i: int, row: list, x1: int, y1: int, ocr_result: list, detections: list, yolo_detection_prob: float=0.3) -> list:
-    '''Checks the detection's probability, discards those with low prob and rewrites output from ocr_reader to >>detections<< list'''
+    '''Verifica as probabilidades de detecção, descarta aqueles com pouca e reescreve a saída do ocr_reader para a lista detections'''
     
     if row[4] >= yolo_detection_prob: #discard predictions below the value             
         if(len(ocr_result))>0:
@@ -277,7 +228,7 @@ def detect_text(i: int, row: list, x1: int, y1: int, ocr_result: list, detection
     return detections
 
 def is_adjacent(coord1: list, coord2: list) -> bool:
-    '''Checks if [x, y] from list coord1 is similar to coord2'''
+    '''Verifica se as cordenadas da primeira lista COORD1 é semelhante a lista COORD2'''
     
     MAX_PIXELS_DIFF=50
     
@@ -288,7 +239,7 @@ def is_adjacent(coord1: list, coord2: list) -> bool:
     
 
 def sort_detections(detections: list, plates_data: list) -> list:
-    '''Looks at detections from last frame and rewrites indexes for similar coordinates'''
+    '''Verifica as detecções do ultimo frame e reescreve os indexes para coordenadas similares'''
     
     for m in range(0, len(detections)):
         for n in range(0, len(plates_data)):
@@ -302,7 +253,7 @@ def sort_detections(detections: list, plates_data: list) -> list:
     return detections
     
 def delete_old_labels(detections: list, count_empty_labels: list, plates_data: list, frames_to_reset: int=3) -> tuple:
-    '''If earlier detected plate isn't spotted for the next >>FRAMES_TO_RESET<< frames, delete it from >>plates_data<<'''
+    '''Deleta placas que já não são detectadas no frame atual'''
     
     for m in range(0, len(detections)):
         if detections[m][0]=='None' and not count_empty_labels[m]==frames_to_reset:
@@ -317,7 +268,7 @@ def delete_old_labels(detections: list, count_empty_labels: list, plates_data: l
 
 
 def overwrite_plates_data(detections: list, plates_data: list, plate_lenght=None) -> list:
-    '''Checks coordinates from >>detections<<, if there is similar record in >>plate_data<< tries to overwrite it (only if probability is higher)'''
+    '''Checa as coordenadas da lista detections, se houver registro semelhante em plate_data, tenta sobrescrevê-lo (apenas se a probabilidade for maior)'''
     
     if (detections[i][2]>plates_data[i][2] or detections[i][2]==0):
         if plate_lenght:
@@ -331,9 +282,9 @@ def overwrite_plates_data(detections: list, plates_data: list, plate_lenght=None
         
     return plates_data
 
-# %%
+#%% Resultado em vídeo
 
-video_path = "./car-plates/sample-video-fhd.mp4"
+video_path = "./car-plates/cars-hd.mp4"
 cap = cv2.VideoCapture(video_path)
 
 plates_data = [['None', [0,0], 0] for n in range(5)]
@@ -355,35 +306,30 @@ while(cap.isOpened()):
     i=0 
     
     
-    ## Read all detected plates per each frame and save them to >>detections<<
+    ## Lê todas as placas detectadas em cada frame e salva em detections
     while i < len(labels):    
         row = coordinates[i]
-        ## 3. Crop detections and pass them to the easyOCR
+        ## Corta detecções e manda para o OCR
         ocr_result, x1, y1=get_plates_xy(frame, labels, row, width, height, reader)  
         
-        ## 4. Get reading for the each frame
+        ## Se prepara para cada frame
         detections=detect_text(i, row, x1, y1, ocr_result, detections, 0.5)
         i+=1    
     i=0
     
-    ## 5. Do some tracking and data managing for better results
-    ## If we get multiple detections in one frame easyOCR mixes them every few frames, so here we make sure that they are saved according to the \
-    ## detections' coordinates. Then we delete data about plates that dissapeared for more than >>frames_to_reset<< frames. And finally we overwrite \
-    ## the predictions (regarding to the probability of easyOCR detections - if new predcition has less p% than the previous one, we skip it.)
-    
-    ## Sort detections 
+    ## Ordena as detecções 
     detections=sort_detections(detections, plates_data)
     
-    ## Delete data about plates that dissapeared from frame
+    ## Deleta dados de placas que desapareceram
     plates_data, count_empty_labels=delete_old_labels(detections, count_empty_labels, plates_data, 3)
             
-    ## Overwrite data and print text predictions over the boxes
+    ## Reescreve os dados e imprime as predições de texto por cima das caixas selecionadas
     while i < len(labels):
         plates_data=overwrite_plates_data(detections, plates_data, 7)
         cv2.putText(frame, f"{plates_data[i][0]}", (plates_data[i][1]), cv2.FONT_HERSHEY_SIMPLEX, 2, (255,255,255), 3)
         i+=1
     
-    cv2.imshow('teste',frame)
+    cv2.imshow('Video',frame)
 
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
@@ -391,11 +337,11 @@ while(cap.isOpened()):
 cap.release()
 cv2.destroyAllWindows()
 
-# %%
+#%% Resultado em imagem
 
 %matplotlib inline
 
-test_photo_path = "car-plates/sample-photo.jpg"
+test_photo_path = "car-plates/carro-1.jpeg"
 
 results = model(test_photo_path)
 detections=np.squeeze(results.render())
@@ -419,4 +365,3 @@ for i in range(len(labels)):
         plt.imshow((image)[...,::-1])
         
         print(f'Detection: {i+1}. YOLOv5 prob: {row[4]:.2f}, easyOCR results: {ocr_result}')
-# %%
