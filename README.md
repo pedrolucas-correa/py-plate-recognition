@@ -11,3 +11,5 @@ Algoritmo para reconhecimento de placa feito com JUPYTER Notebook no VSCode.
 ## Fonte:
 
 Algoritmo baseado em: https://www.kaggle.com/code/saworz/realtime-plate-reading-video-yolov5-easyocr/
+
+Dataset utilizado: https://www.kaggle.com/datasets/andrewmvd/car-plate-detection
